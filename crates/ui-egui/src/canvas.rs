@@ -1755,7 +1755,7 @@ impl DocView {
     fn render_scale(&self, ppp: f32) -> f32 {
         // Exactly the device scale: a raster at any other scale is resampled on screen, which
         // blurs every line and glyph (#260).
-        self.zoom * PT * ppp
+        self.zoom * PT * ppp.min(MAX_RASTER_PPP)
     }
 
     /// Queue sharp rasters for the print preview. Pages that leave the nearby sheets are dropped.
@@ -1777,6 +1777,13 @@ impl DocView {
 }
 
 /// The request tag for a raster at `scale`: equal tags mean the same scale (to 1/65536).
+/// Raster density cap. Single-threaded WASM on a 3-4x phone screen would otherwise rasterize
+/// 20+ megapixel pages on every zoom step; beyond this the raster is stretched on screen.
+#[cfg(target_arch = "wasm32")]
+const MAX_RASTER_PPP: f32 = 2.0;
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_RASTER_PPP: f32 = f32::MAX;
+
 fn scale_tag(scale: f32) -> u64 {
     (f64::from(scale) * 65536.0).round() as u64
 }
@@ -3179,12 +3186,14 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // scale would cancel the running full-page interpret and restart it from scratch, and
     // each pan frame would queue a storm of full-page tile interprets.
     // Pages with nothing on screen yet still queue, so panning to a fresh page draws it.
+    // On phones every page is held, not just slow ones: a pinch changes the scale each frame.
+    let hold_all = crate::chrome::is_compact_mobile(ui.ctx());
     if sharp_held || pan_held {
         let main_tag = tag;
         queue.retain(|req| {
-            // Fast pages render straight through: the hold only protects heavy pages
-            // whose full-page interpret costs seconds.
-            if !view.slow_pages.contains(&req.page) {
+            // Fast pages render straight through on desktop: the hold only protects heavy
+            // pages whose full-page interpret costs seconds.
+            if !hold_all && !view.slow_pages.contains(&req.page) {
                 return true;
             }
             if req.tile.is_some() {
@@ -3434,12 +3443,38 @@ fn selection_actions(ui: &mut egui::Ui, viewport: Rect, view: &mut DocView, info
     if !viewport.intersects(rect) {
         return;
     }
-    let x = rect.left().clamp(viewport.left() + 8.0, (viewport.right() - 520.0).max(viewport.left() + 8.0));
-    let y = if rect.bottom() + 48.0 < viewport.bottom() { rect.bottom() + 6.0 } else { (rect.top() - 44.0).max(viewport.top() + 6.0) };
+    let compact = crate::chrome::is_compact_mobile(ui.ctx());
+    let first = selection.rects(text).first().copied().map_or(rect, |r| xf.view_rect(r));
+    let (margin, gap, bar_h) = (12.0, 10.0, 44.0);
+    let width_cap = if compact { (viewport.width() - 2.0 * margin).max(120.0) } else { 520.0 };
+    let x = rect.left().clamp(viewport.left() + margin.min(8.0), (viewport.right() - width_cap).max(viewport.left() + 8.0));
+    // Mobile: above the first selected line, so the bar never covers the words or the
+    // handles below; below the last line only when there is no room above.
+    let y = if compact {
+        if first.top() - gap - bar_h >= viewport.top() + margin { first.top() - gap - bar_h } else { (rect.bottom() + gap + 24.0).min(viewport.bottom() - bar_h - margin) }
+    } else if rect.bottom() + 48.0 < viewport.bottom() {
+        rect.bottom() + 6.0
+    } else {
+        (rect.top() - 44.0).max(viewport.top() + 6.0)
+    };
     let mut chosen = None;
-    egui::Area::new(egui::Id::new(("text-selection-actions", view.id.0))).order(egui::Order::Foreground).fixed_pos(pos2(x, y)).show(ui.ctx(), |ui| {
+    egui::Area::new(egui::Id::new(("text-selection-actions", view.id.0))).order(egui::Order::Foreground).fixed_pos(pos2(x, y)).constrain_to(viewport.shrink(margin.min(8.0))).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.horizontal(|ui| {
+                if compact {
+                    if ui.button(tl!("Copy")).clicked() {
+                        chosen = Some(SelectionAction::Copy);
+                    }
+                    for (label, action) in [
+                        (tl!("Highlight"), SelectionAction::Markup(comments::CommentTool::Highlight)),
+                        (tl!("Add comment"), SelectionAction::Note),
+                    ] {
+                        if ui.add_enabled(can_comment, egui::Button::new(label)).clicked() {
+                            chosen = Some(action);
+                        }
+                    }
+                    return;
+                }
                 for (label, action) in [
                     (tl!("Add comment"), SelectionAction::Note),
                     (tl!("Highlight"), SelectionAction::Markup(comments::CommentTool::Highlight)),
@@ -3460,6 +3495,9 @@ fn selection_actions(ui: &mut egui::Ui, viewport: Rect, view: &mut DocView, info
     let Some(action) = chosen else { return };
     if let SelectionAction::Copy = action {
         ui.ctx().copy_text(selected);
+        if compact {
+            view.clear_selection();
+        }
         return;
     }
     let Some((page, quads)) = view.selection_quads(info) else { return };
