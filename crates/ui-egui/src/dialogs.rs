@@ -73,13 +73,16 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut next = dialog;
     let modal = widgets::show_modal(ctx, "dialog", |ui| {
-        ui.set_width(match dialog {
+        let target_width = match dialog {
             Dialog::Properties(_) => 640.0,
             Dialog::Print => 820.0,
             Dialog::FieldProps | Dialog::BulkFieldProps => 600.0,
             Dialog::About => 780.0,
             _ => 520.0,
-        });
+        };
+        // On a phone the dialog keeps a 12-point margin either side instead of running off screen.
+        let max_w = if crate::chrome::is_compact_mobile(ctx) { (ctx.content_rect().width() - 24.0).max(280.0) } else { 820.0 };
+        ui.set_width(f32::min(target_width, max_w));
         match dialog {
             Dialog::CreateImages => {
                 let (go, cancel) = crate::create_ui::image_import_body(ui, app);

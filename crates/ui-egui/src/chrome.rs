@@ -6,6 +6,212 @@ use crate::canvas::{DocView, Fit, PageLayout};
 use crate::theme::{self, ThemePreference, Tokens};
 use crate::{Dialog, Mode, PdfCraftApp, PropsTab, RightPanel, icons, widgets};
 
+/// Phone-sized screens (portrait and landscape mobile devices) get the compact layout.
+pub fn is_compact_mobile(ctx: &egui::Context) -> bool {
+    let rect = ctx.content_rect();
+    rect.width() < 680.0 || (rect.height() < 500.0 && rect.width() < 920.0)
+}
+
+/// Phone top bar. With a document: back to Home, its name, then Find, Annotate, theme and the menu.
+/// On Home: the menu, the app name and the theme.
+pub fn mobile_top_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let doc_name = app.active.and_then(|i| app.views.get(i)).and_then(|v| app.session.get(v.id)).map(|d| d.display_name());
+    egui::Panel::top("mobile_top_bar")
+        .exact_size(48.0)
+        .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(6, 0)).stroke(Stroke::new(1.0, t.divider)))
+        .show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let has_doc = app.active.is_some();
+                if has_doc {
+                    if icons::button(ui, "chevron-left", 40.0, false, tl!("Back to Home")).clicked()
+                        && let Some(i) = app.active
+                    {
+                        app.request_close_tab(i);
+                    }
+                } else {
+                    let resp = icons::button(ui, "panel-left", 40.0, false, tl!("Menu"));
+                    egui::Popup::menu(&resp).show(|ui| mobile_menu(app, ui));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if has_doc {
+                        let resp = icons::button(ui, "ellipsis-vertical", 40.0, false, tl!("More"));
+                        egui::Popup::menu(&resp).show(|ui| mobile_menu(app, ui));
+                    }
+                    let dark = t.dark();
+                    if icons::button(ui, if dark { "sun" } else { "moon" }, 40.0, false, tl!("Toggle dark mode")).clicked() {
+                        toggle_dark(app, dark);
+                    }
+                    if has_doc {
+                        if icons::button(ui, "pencil", 40.0, app.mobile_tools_open, tl!("Annotate")).clicked() {
+                            app.mobile_tools_open = !app.mobile_tools_open;
+                        }
+                        if icons::button(ui, "search", 40.0, false, tl!("Find")).clicked() {
+                            app.run_command("edit.find");
+                        }
+                    }
+                    // What is left between the two clusters is the title.
+                    let title = doc_name.as_deref().map_or_else(|| std::borrow::Cow::Borrowed("PdfCraft"), crate::bidi::visual);
+                    ui.with_layout(Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(title).font(theme::medium(14.0)).color(t.text)).truncate());
+                    });
+                });
+            });
+        });
+}
+
+fn toggle_dark(app: &mut PdfCraftApp, dark: bool) {
+    app.execute(if dark { "view.theme.light" } else { "view.theme.dark" });
+}
+
+/// A full-width menu row at least 44 points tall (a touch target).
+fn menu_item(ui: &mut egui::Ui, icon: &str, label: &str, enabled: bool) -> bool {
+    let t = Tokens::get(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), if enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    if enabled && (resp.hovered() || resp.is_pointer_button_down_on()) {
+        ui.painter().rect_filled(rect, CornerRadius::same(6), t.hover);
+    }
+    let (icon_tint, text) = if enabled { (t.icon, t.text) } else { (t.text_faint, t.text_faint) };
+    icons::paint(ui, Rect::from_center_size(rect.left_center() + vec2(22.0, 0.0), vec2(18.0, 18.0)), icon, 18.0, icon_tint);
+    ui.painter().text(rect.left_center() + vec2(44.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(14.0), text);
+    enabled && resp.clicked()
+}
+
+fn mobile_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    ui.set_min_width(240.0);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let has_doc = app.active.is_some();
+    if menu_item(ui, "folder-open", tl!("Open document"), true) {
+        app.run_command("file.open");
+        ui.close();
+    }
+    if menu_item(ui, "save", tl!("Save"), has_doc) {
+        app.run_command("file.save");
+        ui.close();
+    }
+    let (label, target) = if app.mode == Mode::Edit { (tl!("Read mode"), Mode::Read) } else { (tl!("Edit mode"), Mode::Edit) };
+    if menu_item(ui, "book-open", label, has_doc) {
+        app.select_mode(target);
+        ui.close();
+    }
+    if menu_item(ui, "info", tl!("Document properties"), has_doc) {
+        app.dialog = Some(Dialog::Properties(PropsTab::Description));
+        ui.close();
+    }
+    if let Some(i) = app.active
+        && menu_item(ui, "x", tl!("Close document"), true)
+    {
+        app.request_close_tab(i);
+        ui.close();
+    }
+    let dark = Tokens::get(ui.ctx()).dark();
+    if menu_item(ui, if dark { "sun" } else { "moon" }, tl!("Toggle theme"), true) {
+        toggle_dark(app, dark);
+        ui.close();
+    }
+}
+
+pub fn mobile_bottom_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let Some(index) = app.active else { return };
+    let Some(page_count) = app.views.get(index).and_then(|v| app.session.get(v.id)).map(|d| d.info.pages.len()) else { return };
+    let tools_open = app.mobile_tools_open;
+    let mut toggle_tools = false;
+    egui::Panel::bottom("mobile_bottom_bar")
+        .exact_size(52.0)
+        .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(6, 0)).stroke(Stroke::new(1.0, t.divider)))
+        .show(ui, |ui| {
+            let Some(view) = app.views.get_mut(index) else { return };
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if icons::button(ui, "chevron-left", 40.0, false, tl!("Previous page")).clicked() {
+                    view.step_page(false);
+                }
+                // Monospaced digits keep the arrows still while the page number changes.
+                let pages = format!("{} / {}", view.current.saturating_add(1), page_count);
+                ui.label(egui::RichText::new(pages).font(egui::FontId::monospace(13.0)).color(t.text));
+                if icons::button(ui, "chevron-right", 40.0, false, tl!("Next page")).clicked() {
+                    view.step_page(true);
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    if icons::button(ui, "pencil", 40.0, tools_open, tl!("Annotate")).clicked() {
+                        toggle_tools = true;
+                    }
+                    if icons::button(ui, "rotate-cw", 40.0, false, tl!("Rotate view clockwise")).clicked() {
+                        view.rotate_view(true);
+                    }
+                    let is_per_page = !view.continuous && view.layout == PageLayout::Single && view.fit == Fit::Width;
+                    let fit_icon = if is_per_page { "minimize-2" } else { "maximize-2" };
+                    if icons::button(ui, fit_icon, 40.0, is_per_page, tl!("Toggle single page stretch / continuous view")).clicked() {
+                        if is_per_page {
+                            view.continuous = true;
+                            view.fit = Fit::Page;
+                        } else {
+                            view.continuous = false;
+                            view.layout = PageLayout::Single;
+                            view.fit = Fit::Width;
+                        }
+                        view.goto = Some((view.current, 0.0));
+                    }
+                });
+            });
+        });
+    if toggle_tools {
+        app.mobile_tools_open = !app.mobile_tools_open;
+    }
+}
+
+/// The phone's annotation tools: a floating row just above the bottom bar while Annotate is on.
+pub fn mobile_tool_ribbon(app: &mut PdfCraftApp, ctx: &egui::Context) {
+    use crate::QuickTool;
+    use crate::comments::CommentTool;
+    if !app.mobile_tools_open || app.active.is_none() {
+        return;
+    }
+    let t = Tokens::get(ctx);
+    egui::Area::new(egui::Id::new("mobile-tool-ribbon")).order(egui::Order::Foreground).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -62.0)).show(
+        ctx,
+        |ui| {
+            egui::Frame::NONE
+                .fill(t.card)
+                .stroke(Stroke::new(1.0, t.border))
+                .corner_radius(CornerRadius::same(14))
+                .shadow(egui::Shadow { offset: [0, 2], blur: 12, spread: 0, color: Color32::from_black_alpha(if t.dark() { 90 } else { 28 }) })
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let q = app.quick_tool;
+                        if icons::button(ui, "mouse-pointer-2", 40.0, q == QuickTool::Select, tl!("Select")).clicked() {
+                            app.quick_tool = QuickTool::Select;
+                        }
+                        if icons::button(ui, "hand", 40.0, q == QuickTool::Hand, tl!("Hand")).clicked() {
+                            app.quick_tool = QuickTool::Hand;
+                        }
+                        for (tool, icon) in
+                            [(CommentTool::Highlight, "highlighter"), (CommentTool::Note, "message-square"), (CommentTool::Ink, "pencil")]
+                        {
+                            if icons::button(ui, icon, 40.0, q == QuickTool::Comment(tool), tl!(tool.label())).clicked() {
+                                app.execute(tool.command());
+                            }
+                        }
+                        if icons::button(ui, "pen-line", 40.0, matches!(q, QuickTool::Fill(_)), tl!("Fill & Sign")).clicked() {
+                            app.execute("sign.fill.signature");
+                        }
+                        if icons::button(ui, "x", 40.0, false, tl!("Close")).clicked() {
+                            app.mobile_tools_open = false;
+                        }
+                    });
+                });
+        },
+    );
+}
+
+
 /// Height of the tab strip when it doubles as the macOS title bar (#789). AppKit draws the traffic
 /// lights itself, centred in the standard 28 pt title-bar band at the top of the window, and moving
 /// them takes AppKit calls the workspace forbids (`unsafe`). So on macOS the strip is that band:

@@ -509,6 +509,8 @@ pub struct PdfCraftApp {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) print_tasks: print_ui::PrintTasks,
     pub palette_open: bool,
+    /// Compact (phone) layout: the annotation quick bar is shown.
+    pub mobile_tools_open: bool,
     pub palette_query: String,
     pub all_tools_expanded: bool,
     pub recent: Vec<RecentFile>,
@@ -835,6 +837,7 @@ impl PdfCraftApp {
             printer_source: None,
             print_tasks: print_ui::PrintTasks::default(),
             palette_open: false,
+            mobile_tools_open: false,
             palette_query: String::new(),
             all_tools_expanded: false,
             recent: Vec::new(),
@@ -1085,6 +1088,13 @@ impl PdfCraftApp {
             self.active = Some(self.views.len() - 1);
         }
         self.apply_initial_view(self.views.len() - 1, &initial);
+        // A phone-sized screen reads per-page at full stretch width; fitting the whole page leaves it microscopic.
+        if self.ctx.as_ref().is_some_and(chrome::is_compact_mobile)
+            && let Some(view) = self.views.last_mut()
+        {
+            view.layout = canvas::PageLayout::Single;
+            view.fit = canvas::Fit::Width;
+        }
         if activate
             && self.left_open
             && self.left == LeftPanel::Tool("organize")
@@ -2572,20 +2582,27 @@ impl eframe::App for PdfCraftApp {
             self.finish_render_frame(&ctx);
             return;
         }
-        chrome::tab_strip(self, ui);
-        chrome::mode_bar(self, ui);
-        if self.active.is_some() {
-            chrome::right_rail(self, ui);
-            // Read mode hides the tools, not the navigation panes: the rail stays visible
-            // there, so its buttons (Bookmarks, Page thumbnails, ...) must open their panels.
-            // Outside Read mode the docking workspace draws the inspector.
-            if self.mode == Mode::Read && self.right.is_some() {
-                egui::Panel::right("read_right_panel")
-                    .resizable(true)
-                    .default_size(330.0)
-                    .size_range(260.0..=520.0)
-                    .frame(egui::Frame::NONE)
-                    .show(ui, |ui| panels::right_panel(self, ui));
+        if chrome::is_compact_mobile(&ctx) {
+            chrome::mobile_top_bar(self, ui);
+            if self.active.is_some() {
+                chrome::mobile_bottom_bar(self, ui);
+            }
+        } else {
+            chrome::tab_strip(self, ui);
+            chrome::mode_bar(self, ui);
+            if self.active.is_some() {
+                chrome::right_rail(self, ui);
+                // Read mode hides the tools, not the navigation panes: the rail stays visible
+                // there, so its buttons (Bookmarks, Page thumbnails, ...) must open their panels.
+                // Outside Read mode the docking workspace draws the inspector.
+                if self.mode == Mode::Read && self.right.is_some() {
+                    egui::Panel::right("read_right_panel")
+                        .resizable(true)
+                        .default_size(330.0)
+                        .size_range(260.0..=520.0)
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| panels::right_panel(self, ui));
+                }
             }
         }
         let t = theme::Tokens::get(&ctx);
@@ -2600,6 +2617,9 @@ impl eframe::App for PdfCraftApp {
                 docking::show(self, ui);
             }
         });
+        if chrome::is_compact_mobile(&ctx) {
+            chrome::mobile_tool_ribbon(self, &ctx);
+        }
         self.process_pending_edits();
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);

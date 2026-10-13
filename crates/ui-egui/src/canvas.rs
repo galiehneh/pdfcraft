@@ -558,6 +558,24 @@ impl DocView {
         self.auto_scroll.active()
     }
 
+        /// On mobile viewports (< 680px), pages stretch edge-to-edge without wide desktop margins.
+    pub fn side_margin(&self) -> f32 {
+        if self.viewport_w < 680.0 {
+            0.0
+        } else {
+            SIDE
+        }
+    }
+
+    /// Vertical margin around pages. Compact on mobile single-page view.
+    pub fn vertical_margin(&self) -> f32 {
+        if self.viewport_w < 680.0 && self.layout == PageLayout::Single {
+            4.0
+        } else {
+            MARGIN
+        }
+    }
+
     /// Whether a held middle-button pan is active, outside Linux (tests and automation).
     pub fn middle_panning(&self) -> bool {
         self.auto_scroll.panning()
@@ -1032,7 +1050,7 @@ impl DocView {
         let point = |x: Option<f32>, y: Option<f32>| p.dest_fraction(x, y, self.rotation);
         // The window's top-left as far as pages go: its left edge is the gutter that keeps them
         // clear of the floating quick-action bar, so `left` 0 shows the page's edge beside it.
-        let corner = vec2(SIDE, 0.0);
+        let corner = vec2(self.side_margin(), 0.0);
         let (fx, fy, rel) = match dest {
             DestView::Top => return,
             DestView::Xyz { left, top, zoom } => {
@@ -1667,16 +1685,18 @@ impl DocView {
         } else {
             (max_w, largest(|s| s.1))
         };
-        let avail_w = (self.viewport_w - 2.0 * SIDE).max(100.0);
+        let side = self.side_margin();
+        let vert = self.vertical_margin();
+        let avail_w = (self.viewport_w - 2.0 * side).max(100.0);
         let per_row = if self.layout == PageLayout::TwoUp { 2.0 } else { 1.0 };
         match self.fit {
             Fit::Width => self.zoom = (avail_w - GAP * (per_row - 1.0)) / (w * PT * per_row),
             Fit::Page => {
                 let zw = (avail_w - GAP * (per_row - 1.0)) / (w * PT * per_row);
-                let zh = (self.viewport_h - 2.0 * MARGIN) / (h * PT);
+                let zh = (self.viewport_h - 2.0 * vert) / (h * PT);
                 self.zoom = zw.min(zh);
             }
-            Fit::Height => self.zoom = (self.viewport_h - 2.0 * MARGIN) / (h * PT),
+            Fit::Height => self.zoom = (self.viewport_h - 2.0 * vert) / (h * PT),
             Fit::None => {}
         }
         self.zoom = self.zoom.clamp(0.08, 64.0);
@@ -1689,20 +1709,23 @@ impl DocView {
         let shown = info.pages.iter().enumerate().filter(|&(i, _)| single.is_none_or(|c| c == i));
         let max_w = shown.map(|(_, p)| self.display_size(p).0).fold(0.0, f32::max);
         let per_row = if self.layout == PageLayout::TwoUp { 2.0 } else { 1.0 };
-        (max_w * self.zoom * PT * per_row + 2.0 * SIDE).max(avail_w)
+        let side = self.side_margin();
+        (max_w * self.zoom * PT * per_row + 2.0 * side).max(avail_w)
     }
 
     /// Page rects in content coordinates (origin at the scroll content's top-left).
     fn layout(&self, info: &DocInfo, content_w: f32) -> Vec<Rect> {
         let s = self.zoom * PT;
         let mut rects = Vec::with_capacity(info.pages.len());
-        let mut y = MARGIN;
+        let side = self.side_margin();
+        let vert = self.vertical_margin();
+        let mut y = vert;
         match self.layout {
             PageLayout::Single => {
                 for p in &info.pages {
                     let (w, h) = self.display_size(p);
                     let size = vec2(w * s, h * s);
-                    rects.push(Rect::from_min_size(pos2(((content_w - size.x) / 2.0).max(SIDE), y), size));
+                    rects.push(Rect::from_min_size(pos2(((content_w - size.x) / 2.0).max(side), y), size));
                     y += size.y + GAP;
                 }
             }
@@ -1717,7 +1740,7 @@ impl DocView {
                     let sizes: Vec<Vec2> = pair.iter().map(|p| self.display_size(p)).map(|(w, h)| vec2(w * s, h * s)).collect();
                     let row_w: f32 = sizes.iter().map(|v| v.x).sum::<f32>() + GAP * (sizes.len() as f32 - 1.0);
                     let row_h = sizes.iter().map(|v| v.y).fold(0.0, f32::max);
-                    let mut x = if self.cover && ri == 0 { (content_w / 2.0 + GAP / 2.0).max(SIDE) } else { ((content_w - row_w) / 2.0).max(SIDE) };
+                    let mut x = if self.cover && ri == 0 { (content_w / 2.0 + GAP / 2.0).max(side) } else { ((content_w - row_w) / 2.0).max(side) };
                     for size in sizes {
                         rects.push(Rect::from_min_size(pos2(x, y + (row_h - size.y) / 2.0), size));
                         x += size.x + GAP;
@@ -3377,7 +3400,10 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     if let Some((name, action)) = app.views[index].forms.button.take() {
         run_button(app, index, &name, action);
     }
-    quick_bar(app, avail, ui);
+    // Phones get chrome::mobile_tool_ribbon instead.
+    if !crate::chrome::is_compact_mobile(ui.ctx()) {
+        quick_bar(app, avail, ui);
+    }
     if let Some((source, file, destination)) = remote_open {
         app.open_remote_link(source, file, destination);
     }

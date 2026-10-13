@@ -5,9 +5,18 @@ use egui::{Align2, CornerRadius, Rect, Sense, Stroke, vec2};
 use pdfcraft_engine::catalog;
 
 use crate::theme::{self, Tokens};
-use crate::{PdfCraftApp, icons, panels::human_size, widgets};
+use crate::{LeftPanel, PdfCraftApp, icons, panels::human_size, widgets};
 
 const RECOMMENDED: [&str; 5] = ["organize", "comment", "form", "edit", "protect"];
+
+/// The phone home's quick tools: catalog group, icon, title and what it covers.
+const MOBILE_TOOLS: [(&str, &str, &str, &str); 4] = [
+    ("organize", "layers", "Organize", "Rotate, Split, Merge"),
+    ("comment", "pencil", "Annotate", "Highlight, Notes, Draw"),
+    ("fill_sign", "pen-line", "Fill & Sign", "Forms, Signatures"),
+    ("protect", "shield-check", "Protect", "Password, Sanitize"),
+];
+
 
 /// A soft shadow that rises on hover and settles when the card is pressed.
 fn card_lift(ui: &egui::Ui, t: &Tokens, rect: Rect, press: theme::Press) {
@@ -19,6 +28,10 @@ fn card_lift(ui: &egui::Ui, t: &Tokens, rect: Rect, press: theme::Press) {
 }
 
 pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    if crate::chrome::is_compact_mobile(ui.ctx()) {
+        show_mobile(app, ui);
+        return;
+    }
     let t = Tokens::get(ui.ctx());
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin { left: 36, right: 36, top: 28, bottom: 28 }).show(ui, |ui| {
@@ -255,4 +268,136 @@ mod tests {
         );
         output.drop_without_applying_deltas();
     }
+}
+
+
+/// Phone home: a short hero, one large Open button, a two-column grid of quick tools and the
+/// recent files. The community card stays on the desktop home.
+fn show_mobile(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::Frame::NONE.inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+            ui.label(egui::RichText::new("PdfCraft").font(theme::semibold(24.0)));
+            ui.label(egui::RichText::new(tl!("The Offline PDF Workbench")).color(t.text_muted).font(theme::regular(14.0)));
+            ui.add_space(16.0);
+
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
+            let label = tl!("Open PDF Document");
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+            let fill = if resp.is_pointer_button_down_on() { t.accent.gamma_multiply(0.85) } else { t.accent };
+            ui.painter().rect_filled(rect, CornerRadius::same(16), fill);
+            let text = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), theme::semibold(15.0), egui::Color32::WHITE));
+            let left = rect.center().x - (20.0 + 10.0 + text.size().x) * 0.5;
+            icons::paint(ui, Rect::from_center_size(egui::pos2(left + 10.0, rect.center().y), vec2(20.0, 20.0)), "folder-open", 20.0, egui::Color32::WHITE);
+            ui.painter().galley(egui::pos2(left + 30.0, rect.center().y - text.size().y * 0.5), text, egui::Color32::WHITE);
+            if resp.clicked() {
+                app.open_dialog();
+            }
+            ui.add_space(22.0);
+
+            ui.label(egui::RichText::new(tl!("Quick tools")).font(theme::semibold(16.0)));
+            ui.add_space(10.0);
+            let gap = 10.0;
+            let card_w = ((ui.available_width() - gap) / 2.0).max(140.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(gap, gap);
+                for (id, icon, title, blurb) in MOBILE_TOOLS {
+                    if tool_card(ui, &t, card_w, icon, tl!(title), tl!(blurb)).clicked() {
+                        app.left = LeftPanel::Tool(id);
+                        app.left_open = true;
+                        // A tool needs a document: the newest open one, or pick one now.
+                        match app.views.len().checked_sub(1) {
+                            Some(last) => app.active = Some(last),
+                            None => app.open_dialog(),
+                        }
+                    }
+                }
+            });
+            ui.add_space(22.0);
+
+            ui.label(egui::RichText::new(tl!("Recent")).font(theme::semibold(16.0)));
+            ui.add_space(8.0);
+            if app.recent.is_empty() {
+                egui::Frame::NONE
+                    .fill(t.card)
+                    .stroke(Stroke::new(1.0, t.border))
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(20))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.vertical_centered(|ui| {
+                            ui.add(icons::image("file-text", 28.0, t.text_faint));
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(tl!("No documents opened yet")).font(theme::medium(14.0)).color(t.text));
+                            ui.label(egui::RichText::new(tl!("Pick a document above to get started")).font(theme::regular(12.5)).color(t.text_muted));
+                        });
+                    });
+            } else {
+                recent_rows_mobile(app, ui);
+            }
+        });
+    });
+}
+
+fn recent_rows_mobile(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let mut open = None;
+    let mut remove = None;
+    for r in &app.recent {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &r.name));
+        let hovered = ui.rect_contains_pointer(rect);
+        if hovered {
+            ui.painter().rect_filled(rect, CornerRadius::same(8), t.hover);
+            let x_rect = Rect::from_center_size(rect.right_center() - vec2(26.0, 0.0), vec2(28.0, 28.0));
+            let x = ui.interact(x_rect, ui.id().with(("remove-recent-m", &r.path)), Sense::click());
+            let label = crate::i18n::fmt(tl!("Remove {name} from Recent"), &[("name", &r.name)]);
+            x.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+            if x.hovered() {
+                ui.painter().rect_filled(x_rect, CornerRadius::same(6), t.pressed);
+            }
+            icons::paint(ui, x_rect.shrink(6.0), "x", 16.0, t.icon);
+            if x.on_hover_text(tl!("Remove from Recent")).clicked() {
+                remove = Some(r.path.clone());
+            }
+        }
+        icons::paint(
+            ui,
+            Rect::from_min_size(rect.min + vec2(10.0, 11.0), vec2(24.0, 24.0)),
+            "file-text",
+            22.0,
+            egui::Color32::from_rgb(0xE0, 0x3E, 0x3E),
+        );
+        let detail = ui.painter().text(
+            rect.right_center() - vec2(48.0, 0.0),
+            Align2::RIGHT_CENTER,
+            format!("{} {}  ·  {}", r.pages, tl!("pages"), human_size(r.size)),
+            theme::regular(12.0),
+            t.text_muted,
+        );
+        let width = detail.left() - 16.0 - (rect.left() + 46.0);
+        widgets::row_text(ui, rect.min + vec2(46.0, 15.0), crate::bidi::visual(&r.name), theme::medium(13.5), t.text, width);
+        widgets::row_text(ui, rect.min + vec2(46.0, 32.0), crate::bidi::visual(&r.path), theme::regular(11.0), t.text_faint, width);
+        if resp.on_hover_text(&r.path).clicked() {
+            open = Some(r.path.clone());
+        }
+    }
+    if let Some(p) = open {
+        app.open_recent(&p);
+    }
+    if let Some(p) = remove {
+        app.recent.retain(|r| r.path != p);
+    }
+}
+
+/// One quick-tool card: icon, title and a one-line summary, the whole card tappable.
+fn tool_card(ui: &mut egui::Ui, t: &Tokens, width: f32, icon: &str, title: &str, blurb: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 96.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    let fill = if resp.hovered() || resp.is_pointer_button_down_on() { t.hover } else { t.card };
+    ui.painter().rect(rect, CornerRadius::same(12), fill, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+    icons::paint(ui, Rect::from_min_size(rect.min + vec2(14.0, 14.0), vec2(22.0, 22.0)), icon, 22.0, t.accent);
+    widgets::row_text(ui, rect.min + vec2(14.0, 54.0), title.to_owned(), theme::semibold(14.0), t.text, rect.width() - 28.0);
+    widgets::row_text(ui, rect.min + vec2(14.0, 74.0), blurb.to_owned(), theme::regular(11.5), t.text_muted, rect.width() - 28.0);
+    resp
 }
