@@ -44,13 +44,8 @@ pub fn mobile_top_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     if icons::button(ui, if dark { "sun" } else { "moon" }, 40.0, false, tl!("Toggle dark mode")).clicked() {
                         toggle_dark(app, dark);
                     }
-                    if has_doc {
-                        if icons::button(ui, "pencil", 40.0, app.mobile_tools_open, tl!("Annotate")).clicked() {
-                            app.mobile_tools_open = !app.mobile_tools_open;
-                        }
-                        if icons::button(ui, "search", 40.0, false, tl!("Find")).clicked() {
-                            app.run_command("edit.find");
-                        }
+                    if has_doc && icons::button(ui, "search", 40.0, false, tl!("Find")).clicked() {
+                        app.run_command("edit.find");
                     }
                     // What is left between the two clusters is the title.
                     let title = doc_name.as_deref().map_or_else(|| std::borrow::Cow::Borrowed("PdfCraft"), crate::bidi::visual);

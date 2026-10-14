@@ -611,7 +611,8 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
     if cv.cancelled_drag {
         return true;
     }
-    if resp.secondary_clicked()
+    if !crate::chrome::is_compact_mobile(ui.ctx())
+        && resp.secondary_clicked()
         && let Some(p) = pointer.filter(|p| page_rect.contains(*p))
     {
         cv.context_at = Some((cx.page, cx.to_user(p)));
